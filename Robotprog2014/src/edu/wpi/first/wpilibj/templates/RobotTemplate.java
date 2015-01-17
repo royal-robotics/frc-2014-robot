@@ -11,7 +11,7 @@ package edu.wpi.first.wpilibj.templates;
 import edu.wpi.first.wpilibj.*;
 import edu.wpi.first.wpilibj.camera.*;
 import edu.wpi.first.wpilibj.image.*;
-import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
+import edu.wpi.first.wpilibj.smartdashboard.*;
 import java.util.Random;
 
 /**
@@ -33,6 +33,7 @@ public class RobotTemplate extends IterativeRobot {
     Joystick operatorController;
     
     RobotDrive mecanum;
+    RobotDrive tank;
     
     Talon frontRightDrive;
     Talon frontLeftDrive;
@@ -50,7 +51,9 @@ public class RobotTemplate extends IterativeRobot {
     
     DoubleSolenoid pickLift;
     DoubleSolenoid ratchetLoose;
+    DoubleSolenoid ballHolder;
     
+    //LED Colors
     static final int RED = 0;
     static final int GREEN = 1;
     static final int BLUE = 2;
@@ -62,57 +65,34 @@ public class RobotTemplate extends IterativeRobot {
     
     AxisCamera camera;
     CriteriaCollection cc;
-    Servo cameraX;
-    Servo cameraY;
     
-    //Camera constants used for distance calculation
-    final int Y_IMAGE_RES = 480;		//X Image resolution in pixels, should be 120, 240 or 480
-    final double VIEW_ANGLE = 49;		//Axis M1013
-    //final double VIEW_ANGLE = 41.7;		//Axis 206 camera
-    //final double VIEW_ANGLE = 37.4;  //Axis M1011 camera
-    final double PI = 3.141592653;
-
-    //Score limits used for target identification
-    final int  RECTANGULARITY_LIMIT = 40;
-    final int ASPECT_RATIO_LIMIT = 55;
-
-    //Score limits used for hot target determination
-    final int TAPE_WIDTH_LIMIT = 50;
-    final int  VERTICAL_SCORE_LIMIT = 50;
-    final int LR_SCORE_LIMIT = 50;
-
     //Minimum area of particles to be considered
-    final int AREA_MINIMUM = 150;
-
-    //Maximum number of particles to process
-    final int MAX_PARTICLES = 8;
+    final int AREA_MINIMUM = 100;
     
     boolean hot = false;
     
-    Gyro gyro;
     AnalogChannel ultrasonic;
     
     DigitalInput catapultStop;
     
     Encoder driveEncoder;
     Encoder ratchetEncoder;
-    DigitalInput driveEncodeInput;
-    boolean driveEncoderOld;
-    boolean driveEncoderTwoOld;
-    DigitalInput driveEncodeInputTwo;
-    DigitalInput ratchetEncodeInput;
-    DigitalInput ratchetEncodeInputTwo;
+    
+    double distanceAvg[] = new double[5];
+    int distanceAvgCount = 0;
     
     Random randLED;
-    Timer autoTime;
-    DriverStation auto;
     
+    Timer autoTime;
+    Timer teleTime;
+
+    double raiseStart;
  
     public void robotInit() {
         System.out.println("Robot init");
         
-        leftStick = new Joystick(1);
-        rightStick = new Joystick(2);
+        leftStick = new Joystick(2);
+        rightStick = new Joystick(1);
         operatorController = new Joystick(3);
         
         frontRightDrive = new Talon(1);
@@ -120,17 +100,10 @@ public class RobotTemplate extends IterativeRobot {
         backRightDrive = new Talon(3);
         backLeftDrive = new Talon(4);
         
-        mecanum = new RobotDrive(frontRightDrive, frontLeftDrive, backRightDrive, backLeftDrive);
-        mecanum.setInvertedMotor(RobotDrive.MotorType.kFrontRight, true);
-        mecanum.setInvertedMotor(RobotDrive.MotorType.kRearRight, true);
+        mecanum = new RobotDrive(frontRightDrive, backRightDrive, frontLeftDrive, backLeftDrive);        
         
         pickup = new Talon(5);
         ratchet = new Talon(6);
-        
-        cameraX = new Servo(7);
-        cameraX.set(0.25);
-        cameraY = new Servo(8);
-        cameraY.set(0.3);
         
         pump = new Compressor(1,1);
         
@@ -140,65 +113,211 @@ public class RobotTemplate extends IterativeRobot {
         
         ratchetLoose = new DoubleSolenoid(1,4);        
         pickLift = new DoubleSolenoid(2,3); 
+        ballHolder = new DoubleSolenoid(5,6);
         
         randLED = new Random();
         randLED.nextInt(7);
+        
         autoTime = new Timer();
+        autoTime.reset();
+        teleTime = new Timer();
+        teleTime.reset();
 
         catapultStop = new DigitalInput(3);
 
-        gyro = new Gyro(1);
-        gyro.reset();
         ultrasonic = new AnalogChannel(4);
         camera = AxisCamera.getInstance();
         cc = new CriteriaCollection();      // create the criteria for the particle filter
         cc.addCriteria(NIVision.MeasurementType.IMAQ_MT_AREA, AREA_MINIMUM, 65535, false);
+        camera.writeResolution(AxisCamera.ResolutionT.k320x240);
+        hot = false;
         
         driveEncoder = new Encoder(6,8);
         ratchetEncoder = new Encoder(10,11);
         driveEncoder.setDistancePerPulse((2 * 3.1415 * 3.0) / 1440.0);
         driveEncoder.start();
         ratchetEncoder.start();
-        //driveEncodeInput = new DigitalInput(6);
-        //driveEncodeInputTwo = new DigitalInput(8);
-        //ratchetEncodeInput = new DigitalInput(10);
-        //ratchetEncodeInputTwo = new DigitalInput(11);
         
-        
-        //initializes the piston for the ratchet
+        //Initializes the Solenoid
         ratchetLoose.set(DoubleSolenoid.Value.kReverse);
         pickLift.set(DoubleSolenoid.Value.kReverse);
+        ballHolder.set(DoubleSolenoid.Value.kReverse);
     }
 
     /**
      * This function is called periodically during autonomous
      */
-    double drive = 1.0;
-    double curve = 0.03;
+    double drive = (1.0/3.0);
+    double curve = 0.0;
+    boolean autoLaunch = false;
+    boolean checkHot = false;
+    boolean timeStart = false;
+    boolean stop = false;
     
     public void autonomousInit() {
-        autoTime.start();
-        gyro.reset();
+        autoTime.stop();
+        autoTime.reset();
+        autoLaunch = false;
+        checkHot = false;
+        hot = false;
+        timeStart = false;
+        stop = false;
+        ballHolder.set(DoubleSolenoid.Value.kForward);
     }
     
     public void autonomousPeriodic() {
-        dashboard();
-        if (autoTime.get() == 100)
-        {
-             mecanum.drive(drive, curve);
-             pickLift.set(DoubleSolenoid.Value.kForward);
-        }
-        else if (autoTime.get() == 1000)
-        {
-             mecanum.drive(0, 0);
-        }
-        else if (autoTime.get() == 3000)
-        {
-             ratchetLoose.set(DoubleSolenoid.Value.kForward);
-        }
-    System.out.println("I'm in autonomos periodic");
-    }
+        DriverStation ds = DriverStation.getInstance();
+        Watchdog watchdog = Watchdog.getInstance();
+        if (rightStick.getZ() <= 1.0) {  //1 Ball, Hot Check
+            //Get the Range
+            double range = 0.0;
+            distanceAvg[distanceAvgCount] = ultrasonic.getVoltage()*100;
+            distanceAvgCount++;
+            if (distanceAvgCount >= distanceAvg.length)
+            {
+                distanceAvgCount = 0;
+            }
+            for (int i = 0; i < distanceAvg.length; i++)
+            {
+                range = range + distanceAvg[i];
+            }
+            range = range / (double)distanceAvg.length;
+            watchdog.feed();
 
+            pickLift.set(DoubleSolenoid.Value.kForward);
+
+            if (((ultrasonic.getVoltage() * 100) < 167.0 && ds.getMatchTime() > 1.6) || autoLaunch)
+            {
+                //Stop
+                stop = true;
+                watchdog.feed();
+                mecanum.mecanumDrive_Polar(0, 0, 0);
+                if (! checkHot)
+                {
+                    hot = isHot();  //Check for Hot Goal
+                    watchdog.feed();
+                    checkHot = true;
+                    raiseStart = ds.getMatchTime();
+                    ballHolder.set(DoubleSolenoid.Value.kReverse);
+                }
+            }
+            else
+            {
+                //Drive
+                watchdog.feed();
+                mecanum.mecanumDrive_Polar((1.0/3.0), -90, 0.0);
+            }
+
+            if ((((ultrasonic.getVoltage() * 100) > 60.0 && (ultrasonic.getVoltage() * 100) < 167.0 && ds.getMatchTime() > 3.9) && ((ds.getMatchTime() - raiseStart) > 0.25) && ! autoLaunch && hot) || (ds.getMatchTime() > 7.0 && ! autoLaunch))
+            {
+                //Shoot
+                watchdog.feed();
+                ratchetLoose.set(DoubleSolenoid.Value.kForward);  // Fire
+                autoLaunch = true;
+            }
+            dashboard();  //Update Dashboard
+        }
+        /*else if (rightStick.getZ() < 0.5 && rightStick.getZ() > 0.0) {  //1 Ball, No Hot Check
+            mecanum.mecanumDrive_Polar(1.0/3.0, -90, 0.0);  //Drive
+            pickLift.set(DoubleSolenoid.Value.kForward);
+            if (ds.getMatchTime() > 1.7)
+            {
+                //Stop and Shoot
+                watchdog.feed();
+                mecanum.mecanumDrive_Polar(0, 0, 0);
+                ratchetLoose.set(DoubleSolenoid.Value.kForward);
+            }
+            dashboard();
+        }
+        else if (rightStick.getZ() >= 0.5) {  //Just Drive, don't shoot
+            mecanum.mecanumDrive_Polar(1.0/3.0, -90, 0.0);  //Drive
+            if (ds.getMatchTime() > 1.7)
+            {
+                watchdog.feed();
+                mecanum.mecanumDrive_Polar(0, 0, 0);  //Stop
+            }
+            dashboard();
+        }
+        else if (rightStick.getZ() <= -0.5) {  //2 Balls
+            if (ds.getMatchTime() > 0.0 && ds.getMatchTime() < 1.2)
+            {
+                watchdog.feed();
+                pickLift.set(DoubleSolenoid.Value.kForward);  //Pickup Down
+            }
+            
+            if ((ultrasonic.getVoltage() * 100) > 208 && ds.getMatchTime() > 1.2)
+            {
+                watchdog.feed();
+                mecanum.mecanumDrive_Polar(0.5, -90.0, 0.0);  //Drive
+            }
+            
+            if ((ultrasonic.getVoltage() * 100) < 208 && (ultrasonic.getVoltage() * 100) > 185 && ds.getMatchTime() > 1.2)
+            {
+                watchdog.feed();
+                ratchetLoose.set(DoubleSolenoid.Value.kForward);  //Fire
+                mecanum.mecanumDrive_Polar(0.5, -90.0, 0.0);
+                if (! timeStart)
+                {
+                    //Start Timer
+                    autoTime.reset();
+                    autoTime.start();
+                    timeStart = true;
+                }
+            }
+            
+            if (autoTime.get() > 0.0 && (ultrasonic.getVoltage() * 100) > 100)
+            {
+                mecanum.mecanumDrive_Polar(0.5, -90.0, 0.0);
+            }
+            
+            if (autoTime.get() > 0.0 && (ultrasonic.getVoltage() * 100) < 100)
+            {
+                mecanum.mecanumDrive_Polar(0.0, 0.0, 0.0);
+            }
+            
+            if (autoTime.get() > 5.0)
+            {
+                pickup.set(0.0);
+                ratchet.set(0.0);
+                ratchetLoose.set(DoubleSolenoid.Value.kForward);
+            }
+            
+            if (autoTime.get() > 0.2 && autoTime.get() < 5.0)
+            {
+                ratchetLoose.set(DoubleSolenoid.Value.kReverse);
+                if (! catapultStop.get())
+                {
+                    ratchet.set(-1.0);
+                }
+                else
+                {
+                    ratchet.set(0.0);
+                }
+            }
+            
+            if (autoTime.get() > 0.8 && autoTime.get() < 2.5)
+            {
+                pickup.set(-0.8);
+            }
+            
+            if (autoTime.get() > 2.5 && autoTime.get() < 2.62)
+            {
+                pickup.set(0.75);
+            }
+            
+            if (autoTime.get() > 2.62 && autoTime.get() < 2.9)
+            {
+                pickup.set(-0.8);
+            }
+            
+            if (autoTime.get() > 2.9)
+            {
+                pickup.set(0.0);
+            }
+            dashboard();
+        }*/
+    }
+    
     /**
      * This function is called periodically during operator control
      */
@@ -206,194 +325,197 @@ public class RobotTemplate extends IterativeRobot {
     int pickTime = 50;
 
     public void teleopInit() {
-         pump.start();
+        pump.start();
+        ratchetLoose.set(DoubleSolenoid.Value.kReverse);
+        pickLift.set(DoubleSolenoid.Value.kReverse);
+        teleTime.reset();
+    }
+    
+    double driveLeft;
+    public double leftDrive()
+    {
+        if (leftStick.getAxis(Joystick.AxisType.kY) > 0.1 && leftStick.getAxis(Joystick.AxisType.kY) < -0.1)
+        {
+            driveLeft = leftStick.getAxis(Joystick.AxisType.kY) * 1;
+        }
+        return driveLeft;
+    }
+    
+    double driveRight;
+    public double rightDrive()
+    {
+        if (rightStick.getAxis(Joystick.AxisType.kY) > 0.1 && rightStick.getAxis(Joystick.AxisType.kY) < -0.1)
+        {
+            driveRight = rightStick.getAxis(Joystick.AxisType.kY) * 1;
+        }
+        return driveRight;
     }
     
     public void teleopPeriodic() {
-        dashboard();
-       
-      
-        //Calls the motor functions.
+        dashboard();  //Update Dashboard
+        
+        //Scales Driving Speed
         double div;
-        if(leftStick.getTrigger() == true) {
+        if(leftStick.getTrigger()) {
             div = 3;
         } else if (rightStick.getTrigger()){
             div = 1;
         } else div = 2;
         
-        /*double leftS_X = -(leftStick.getX()/div);
-        if(leftS_X > -dead &&leftS_X < dead)
-        {
-            leftS_X = 0;
-        }
+        Watchdog.getInstance().feed();
         
-        double leftS_Y = leftStick.getY()/div;
-        if(leftS_Y > -dead &&leftS_Y < dead)
-        {
-            leftS_Y = 0;
-        }*/
-        
-        double mag = leftStick.getMagnitude()/div;
-        if (mag > -dead && mag < dead)
+        double mag = leftStick.getMagnitude()/div;  //Magnitude of Drive
+        if (mag > -dead && mag < dead)  //Dead Zone
         {
             mag = 0;
         }
         
-        double deg = leftStick.getDirectionDegrees() - 90;
+        double deg = leftStick.getDirectionDegrees();  //Direction of Drive
         
-        double rightS_X = (rightStick.getX()/div);
-        if(rightS_X > -dead && rightS_X < dead)
+        double rightS_X = (rightStick.getX()/div);  //Rotation of Drive
+        if(rightS_X > -dead && rightS_X < dead)  //Dead Zone
         {
-            if (mag > dead && deg <= 45 && deg >= -45)
-            {
-                rightS_X = 0.03;
-            }
-            else if (mag > dead && deg > 45 && deg < 135)
-            {
-                rightS_X = 0.03;
-            }
-            else if (mag > dead && deg < -45 && deg > -135)
-            {
-                rightS_X = 0.03;
-            }
-            else if (mag > dead && deg >= 135 && deg <= -135)
-            {
-                rightS_X = -0.03;
-            }
-            else rightS_X = 0;
+            rightS_X = 0;
         }
-        mecanum.mecanumDrive_Polar(mag, deg, rightS_X);
         
-        operator();
-        //setLED();
-        ledRed.set(Relay.Value.kForward);
-        ledGreen.set(Relay.Value.kForward);
-        ledBlue.set(Relay.Value.kForward);
+        Watchdog.getInstance().feed();//nerds be like: "Hi, I'm Moisey
+        
+        mecanum.mecanumDrive_Polar(mag, deg, rightS_X);  //DRIVING!
+        /*if (mag > 0.5 && deg > -110 && deg < -70)
+        {
+            mecanum.mecanumDrive_Polar(mag, -90.0, rightS_X);
+        }
+        if (mag > 0.5 && deg > 70 && deg < 110)
+        {
+            mecanum.mecanumDrive_Polar(mag, 90.0, rightS_X);
+        }*/
+        
+        operator();  //Process Operator Inputs
+        Watchdog.getInstance().feed();
+        setLED();  //Set LED Color
+        Watchdog.getInstance().feed();
+        
         if (leftStick.getRawButton(2))
         {
             hot = isHot();
+            Watchdog.getInstance().feed();
         }
         
+        //Use To Calibrate Talons
+        if (operatorController.getRawButton(3))
+        {
+            frontRightDrive.set(1.0);
+            frontLeftDrive.set(1.0);
+            backRightDrive.set(1.0);
+            backLeftDrive.set(1.0);
+        }
+        
+        if (operatorController.getRawButton(2))
+        {
+            frontRightDrive.set(-1.0);
+            frontLeftDrive.set(-1.0);
+            backRightDrive.set(-1.0);
+            backLeftDrive.set(-1.0);
+        }
+        //mecanum.tankDrive(leftStick.getAxis(Joystick.AxisType.kY) * 1, rightStick.getAxis(Joystick.AxisType.kY) * 1);
     }
     
     public void disabledInit() {
-        
+        dashboard(); //Update Dashboard
     }
 
-    public void disabledPeriodic() {
-        dashboard();
+    public void disabledPeriodic() { //fart face HAHAHA
+        dashboard();  //Update Dashboard
     }
-    /*
-     * Operator controls are interpreted here.
-    */ 
 
     double divTwo = 1.0;
     double axis2=0;
     boolean pickDown = false;
-    public void operator()
+    public void operator()  //Process Operator Inputs
     {
-        if(operatorController.getRawAxis(6) == 1.0)
+        Watchdog watchdog = Watchdog.getInstance();
+        
+        if(operatorController.getRawAxis(5) == 1.0)
         {
-            pickup.set(1.0);
+            pickup.set(1.0);  //D-Pad Right Ejects Balls
         }
         else if(operatorController.getRawButton(1))
         {
-            pickup.set(-1.0);
+            pickup.set(-1.0);  //Button 1 Sucks Balls
         }
         else 
         {
             pickup.set(0);
         }
         
-        if(operatorController.getRawButton(4))
+        watchdog.feed();
+        
+        if(operatorController.getRawButton(3))
         {
-             ratchetLoose.set(DoubleSolenoid.Value.kReverse);
+             ratchetLoose.set(DoubleSolenoid.Value.kReverse);  //Button 4 Engages Ratchet
         }
         
-        if(operatorController.getRawButton(6) && pickLift.get() == DoubleSolenoid.Value.kForward)
+        if(operatorController.getRawButton(6) && pickLift.get() == DoubleSolenoid.Value.kForward && ballHolder.get() == DoubleSolenoid.Value.kReverse)
         {
-             ratchetLoose.set(DoubleSolenoid.Value.kForward);
+             ratchetLoose.set(DoubleSolenoid.Value.kForward);  //Button 6 Shoots if pickup is down and ball holder is up
         }
         
-        
-        /*if(operatorController.getRawButton(5) == true)
-        { 
-            if(ratchetIn==false)
-            {
-                ratchetLoose.set(DoubleSolenoid.Value.kReverse);
-                timer++;
-                if(timer >40) ratchetIn = true;
-            }else if(ratchetIn == true && catapultStop.get() == false )
-            {
-             ratchet.set(-0.5);
-            } else ratchet.set(0);
-        } else ratchet.set(0);*/
-        /*
-        axis2=operatorController.getRawAxis(2);
-        if (axis2 > dead)
-        {
-            pickup.set(axis2);
-        }
-        else if (axis2 < -dead)
-        {
-            pickup.set(axis2);
-        }
-        else if(!operatorController.getRawButton(1) && operatorController.getRawAxis(6)>dead &&)
-        {
-            pickup.set(0);
-        } */
+        watchdog.feed();
         
         if (operatorController.getRawButton(5) && ! catapultStop.get())
         {
+            //Button 5 Brings Ratchet Down, Automatically Engages Ratchet
             ratchetLoose.set(DoubleSolenoid.Value.kReverse);
             ratchet.set(-1);
         }
         else
         {
-            ratchet.set(0);
+            ratchet.set(0); //THAT SHO' IS RATCHET
         }
         
-        System.currentTimeMillis();
+        watchdog.feed();
+        
         if(operatorController.getRawButton(8))
         {
-                pickLift.set(DoubleSolenoid.Value.kForward);
+                pickLift.set(DoubleSolenoid.Value.kForward);  //Button 8 Brings Pickup Down
         }
         
         if(operatorController.getRawButton(7))
         {
-                pickLift.set(DoubleSolenoid.Value.kReverse);
+                pickLift.set(DoubleSolenoid.Value.kReverse);  //Button 7 Brings Puckup Up
         }
         
-        if (operatorController.getRawAxis(4) > dead)
+        watchdog.feed();
+        
+        if(operatorController.getRawButton(2))
         {
-            cameraX.set(cameraX.get() + (operatorController.getRawAxis(4) / 100));
-        }
-        else if (operatorController.getRawAxis(4) < -dead)
-        {
-            cameraX.set(cameraX.get() + (operatorController.getRawAxis(4) / 100));
+            ballHolder.set(DoubleSolenoid.Value.kForward);
         }
         else
         {
-            cameraX.set(cameraX.get());
+            ballHolder.set(DoubleSolenoid.Value.kReverse);
         }
         
-        if (operatorController.getRawAxis(5) > 0.5)
+        if (operatorController.getRawButton(4))
         {
-            cameraY.set(cameraY.get() - (operatorController.getRawAxis(5) / 100));
-        }
-        else if (operatorController.getRawAxis(5) < -0.5)
-        {
-            cameraY.set(cameraY.get() - (operatorController.getRawAxis(5) / 100));
-        }
-        else
-        {
-            cameraY.set(cameraY.get());
+            teleTime.reset();
+            teleTime.start();
         }
         
-        if (operatorController.getRawButton(10))
+        if (teleTime.get() > 0.0 && teleTime.get() < 0.12)
+            {
+                pickup.set(0.75);
+            }
+            
+        if (teleTime.get() > 0.12 && teleTime.get() < 0.4)
+            {
+                pickup.set(-0.8);
+            }
+        
+        if (teleTime.get() > 0.4)
         {
-            cameraX.set(0.25);
-            cameraY.set(0.3);
+            teleTime.stop();
+            teleTime.reset();
         }
     }
     
@@ -401,51 +523,32 @@ public class RobotTemplate extends IterativeRobot {
     /* This function is called periodically during test mode
      */
     public void testPeriodic() {
-        dashboard();
+        dashboard();  //Update Dashboard
     }
     
-    public void dashboard() {
-        SmartDashboard.putNumber("Speed", leftStick.getMagnitude());
-        SmartDashboard.putBoolean("1/2 Power", (leftStick.getTrigger()||rightStick.getTrigger()));
-        SmartDashboard.putBoolean("1/3 Power", leftStick.getTrigger());
-        SmartDashboard.putBoolean("Full Power", rightStick.getTrigger());
-        SmartDashboard.putNumber("X",leftStick.getX());
-        SmartDashboard.putNumber("Y",leftStick.getY());
-        SmartDashboard.putNumber("Turn",rightStick.getX());
-        SmartDashboard.putNumber("Angle", leftStick.getDirectionDegrees());
-        SmartDashboard.putBoolean("Stop switch", (boolean)catapultStop.get());
-        SmartDashboard.putNumber("Ultrasonic Reading Dial", ultrasonic.getVoltage()*100);
-        SmartDashboard.putNumber("Ultrasonic Reading", ultrasonic.getVoltage()*100);
-        SmartDashboard.putNumber("Ultrasonic Reading Bar", ultrasonic.getVoltage()*100);
-        SmartDashboard.putNumber("Gyro Reading", gyro.getAngle());
-        SmartDashboard.putNumber("Driving Encoder", driveEncoder.getRaw());
-        SmartDashboard.putNumber("Ratchet Encoder", ratchetEncoder.getRaw());
-        //SmartDashboard.putNumber("Random Number", rand);
-        //SmartDashboard.putNumber("Random Timer", ledTimer);
-        SmartDashboard.putNumber("axis1",operatorController.getRawAxis(1));
-        SmartDashboard.putNumber("axis2",operatorController.getRawAxis(2));
-        SmartDashboard.putNumber("axis3",operatorController.getRawAxis(3));
-        SmartDashboard.putNumber("axis4",operatorController.getRawAxis(4));
-        SmartDashboard.putNumber("axis5",operatorController.getRawAxis(5));
-        SmartDashboard.putNumber("axis6",operatorController.getRawAxis(6));
-        SmartDashboard.putBoolean("Ratchet engaged", ratchetLoose.get() == DoubleSolenoid.Value.kForward);
-        SmartDashboard.putBoolean("Hot Goal?", hot);
+    public void dashboard() {  //Updates Dashboard with Current Values
+        Watchdog watchdog = Watchdog.getInstance();
         
-        //SmartDashboard.putBoolean("Driving Encoder", (boolean)driveEncodeInput.get());
-        //SmartDashboard.putBoolean("Driving EncoderTwo", (boolean)driveEncodeInputTwo.get());
-        //if (driveEncoderOld != driveEncodeInput.get())
-        //{
-        //    System.out.println("Driving Encoder " + driveEncodeInput.get());
-        //    driveEncoderOld = driveEncodeInput.get();
-        //}
-        //if (driveEncoderTwoOld != driveEncodeInputTwo.get())
-        //{
-        //    System.out.println("Driving Encoder Two" + driveEncodeInputTwo.get());
-        //    driveEncoderTwoOld = driveEncodeInputTwo.get();
-        //}
+        SmartDashboard.putBoolean("Stop switch", (boolean)catapultStop.get());
+        SmartDashboard.putNumber("Ultrasonic Reading", ultrasonic.getVoltage()*100);
+        SmartDashboard.putBoolean("Hot Goal", hot);
+        SmartDashboard.putBoolean("In Range", ((ultrasonic.getVoltage() * 100) < 175.0 && (ultrasonic.getVoltage() * 100) > 165.0) || ((ultrasonic.getVoltage() * 100) > 80 && (ultrasonic.getVoltage() * 100) < 100));
+        
+        watchdog.feed();
+        
+        SmartDashboard.putBoolean("Auto 1 Ball Hot Check", rightStick.getZ() <= 1.0);
+        SmartDashboard.putNumber("Left Drive", leftStick.getAxis(Joystick.AxisType.kY) * 100);
+        SmartDashboard.putNumber("Right Drive", rightStick.getAxis(Joystick.AxisType.kY) * 100);
+        SmartDashboard.putNumber("Left Stick", leftStick.getAxis(Joystick.AxisType.kY));
+        SmartDashboard.putNumber("Right Stick", rightStick.getAxis(Joystick.AxisType.kY));
+        /*SmartDashboard.putBoolean("Auto 1 Ball No Hot Check", rightStick.getZ() <= 0.5 && rightStick.getZ() > 0.0);
+        SmartDashboard.putBoolean("Auto 2 Balls", rightStick.getZ() <= -0.5);
+        SmartDashboard.putBoolean("Auto No Balls No Shot", rightStick.getZ() >= 0.5);*/
+        
+        watchdog.feed();
     }
     
-    public void setLEDColor(int color) {
+    public void setLEDColor(int color) {  //Changes Color according to input
         if(color == RED) {
             ledRed.set(Relay.Value.kReverse);
             ledGreen.set(Relay.Value.kForward);
@@ -483,14 +586,17 @@ public class RobotTemplate extends IterativeRobot {
     
     int ledTimer = 0;
     int randOld;
-    public void setLED() {
+    public void setRandLED() {  //Set LED Color Randomly
+        Watchdog watchdog = Watchdog.getInstance();
         ledTimer++;
         randOld = rand;
-        if (ledTimer >= 50) {
+        if (ledTimer >= 40) {
             chooseLED();
+            watchdog.feed();
             while(randOld == rand)
             {
                 chooseLED();
+                watchdog.feed();
             }
             if (rand == 0) {
                 setLEDColor(RED);
@@ -510,16 +616,58 @@ public class RobotTemplate extends IterativeRobot {
                 setLEDColor(NOTHING);
             }
             
+            watchdog.feed();
             ledTimer = 0;
         }
     }
     
     int rand;
-    public void chooseLED() {
+    public void chooseLED() {  //Advances RNG for Random LED
         rand = randLED.nextInt(7);
     }
     
-    public boolean isHot() {
+    public void setLED() {  //Sets the Color of the LED's
+        DriverStation color = DriverStation.getInstance();
+        Watchdog.getInstance().feed();
+        
+        if (catapultStop.get()) {
+            if(((ultrasonic.getVoltage() * 100) < 185.0 && (ultrasonic.getVoltage() * 100) > 175.0) || ((ultrasonic.getVoltage() * 100) > 80 && (ultrasonic.getVoltage() * 100) < 100)) {
+                //Turn Green if Robot is in Shooting Range
+                setLEDColor(GREEN);
+                Watchdog.getInstance().feed();
+            } else {
+                //Turn White if Catapult is Cocked
+                setLEDColor(WHITE);
+                Watchdog.getInstance().feed();
+            }
+        }
+        else if (operatorController.getRawButton(2)) {
+            setRandLED();  //Button 2 Randomly Sets the LEDs
+            Watchdog.getInstance().feed();
+        }
+        else
+        {
+            if (color.getAlliance() == DriverStation.Alliance.kRed)
+            {
+                //Turn Red if Alliance Color is Red
+                setLEDColor(RED);
+                Watchdog.getInstance().feed();
+            }
+            else if (color.getAlliance() == DriverStation.Alliance.kBlue)
+            {
+                //Turn Blue if Alliance Color is Blue
+                setLEDColor(BLUE);
+                Watchdog.getInstance().feed();
+            }
+            else
+            {
+                setLEDColor(WHITE);
+                Watchdog.getInstance().feed();
+            }
+        }
+    }
+    
+    public boolean isHot() {  //Vision Processing for Hot Goal
         boolean result = false;
         Watchdog watchdog = Watchdog.getInstance();
         
@@ -527,31 +675,32 @@ public class RobotTemplate extends IterativeRobot {
         
         try
         {
-            ColorImage image = camera.getImage();
+            ColorImage image = camera.getImage();  //Get an Image
             watchdog.feed();
-            //BinaryImage thresholdImage = image.thresholdHSV(105, 137, 230, 255, 133, 183);   // keep only green objects
-            BinaryImage thresholdImage = image.thresholdRGB(0, 128, 50, 255, 0, 128);
+            BinaryImage thresholdImage = image.thresholdRGB(80, 255, 80, 255, 80, 255);  //Keep only Bright Particals
             watchdog.feed();
             BinaryImage filteredImage = thresholdImage.particleFilter(cc);           // filter out small particles
             watchdog.feed();
             if (filteredImage.getNumberParticles() > 0)
             {
-                System.out.println("PaticalCount=" + filteredImage.getNumberParticles());
+                System.out.println("PaticalCount = " + filteredImage.getNumberParticles());
                 
-		for (int i = 0; i < MAX_PARTICLES && i < filteredImage.getNumberParticles(); i++) 
+		for (int i = 0; i < filteredImage.getNumberParticles(); i++) 
                 {
+                    //Analyze Particals
                     ParticleAnalysisReport report = filteredImage.getParticleAnalysisReport(i);
                     watchdog.feed();
 
-                    System.out.println("Score=" + scoreRectangularity(report));
-                    if (scoreRectangularity(report) > 70)
+                    if (scoreRectangularity(report) > 40)
                     {
+                        //Found a Hot Goal
                         result = true;
                         break;
                     }
                 }
             }
             
+            //Delete Images
             filteredImage.free();
             thresholdImage.free();
             image.free();
@@ -568,11 +717,20 @@ public class RobotTemplate extends IterativeRobot {
         return result;
     }
     
-    double scoreRectangularity(ParticleAnalysisReport report){
-        if(report.boundingRectWidth*report.boundingRectHeight !=0){
-                return 100*report.particleArea/(report.boundingRectWidth*report.boundingRectHeight);
-        } else {
-                return 0;
-        }	
+    double scoreRectangularity(ParticleAnalysisReport report){  //Analyze Particals for Hot Goal
+        if(report.boundingRectWidth*report.boundingRectHeight != 0){
+            double rectRatio = (double)report.boundingRectWidth / (double)report.boundingRectHeight;
+            double score = 100*report.particleArea/(report.boundingRectWidth*report.boundingRectHeight);
+            System.out.println("Ratio = " + rectRatio + " Score = " + score + " Top = " + report.boundingRectTop + " Left = " + report.boundingRectLeft + " Width = " + report.boundingRectWidth + " Height = " + report.boundingRectHeight);
+            if (rectRatio > 4.0 && rectRatio < 7.0)  //Similar Shape as Hot Goal
+            {
+                return score;
+            }   
+        } 
+        
+        return 0;
     }
 }
+
+// WE WILL WIN!
+// BELIEVE!!
