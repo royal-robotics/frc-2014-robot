@@ -28,12 +28,11 @@ public class RobotTemplate extends IterativeRobot {
      * used for any initialization code.
      */
     
-    Joystick leftStick;
     Joystick rightStick;
+    Joystick leftStick;
     Joystick operatorController;
     
     RobotDrive mecanum;
-    RobotDrive tank;
     
     Talon frontRightDrive;
     Talon frontLeftDrive;
@@ -91,8 +90,8 @@ public class RobotTemplate extends IterativeRobot {
     public void robotInit() {
         System.out.println("Robot init");
         
-        leftStick = new Joystick(2);
-        rightStick = new Joystick(1);
+        leftStick = new Joystick(1);
+        rightStick = new Joystick(2);
         operatorController = new Joystick(3);
         
         frontRightDrive = new Talon(1);
@@ -100,7 +99,7 @@ public class RobotTemplate extends IterativeRobot {
         backRightDrive = new Talon(3);
         backLeftDrive = new Talon(4);
         
-        mecanum = new RobotDrive(frontRightDrive, backRightDrive, frontLeftDrive, backLeftDrive);        
+        mecanum = new RobotDrive(frontLeftDrive, backLeftDrive, frontRightDrive, backRightDrive);        
         
         pickup = new Talon(5);
         ratchet = new Talon(6);
@@ -168,7 +167,7 @@ public class RobotTemplate extends IterativeRobot {
     public void autonomousPeriodic() {
         DriverStation ds = DriverStation.getInstance();
         Watchdog watchdog = Watchdog.getInstance();
-        if (rightStick.getZ() <= 1.0) {  //1 Ball, Hot Check
+        if (leftStick.getZ() <= 1.0) {  //1 Ball, Hot Check
             //Get the Range
             double range = 0.0;
             distanceAvg[distanceAvgCount] = ultrasonic.getVoltage()*100;
@@ -331,34 +330,14 @@ public class RobotTemplate extends IterativeRobot {
         teleTime.reset();
     }
     
-    double driveLeft;
-    public double leftDrive()
-    {
-        if (leftStick.getAxis(Joystick.AxisType.kY) > 0.1 && leftStick.getAxis(Joystick.AxisType.kY) < -0.1)
-        {
-            driveLeft = leftStick.getAxis(Joystick.AxisType.kY) * 1;
-        }
-        return driveLeft;
-    }
-    
-    double driveRight;
-    public double rightDrive()
-    {
-        if (rightStick.getAxis(Joystick.AxisType.kY) > 0.1 && rightStick.getAxis(Joystick.AxisType.kY) < -0.1)
-        {
-            driveRight = rightStick.getAxis(Joystick.AxisType.kY) * 1;
-        }
-        return driveRight;
-    }
-    
     public void teleopPeriodic() {
         dashboard();  //Update Dashboard
         
         //Scales Driving Speed
         double div;
-        if(leftStick.getTrigger()) {
+        if(rightStick.getTrigger()) {
             div = 3;
-        } else if (rightStick.getTrigger()){
+        } else if (leftStick.getTrigger()){
             div = 1;
         } else div = 2;
         
@@ -380,7 +359,8 @@ public class RobotTemplate extends IterativeRobot {
         
         Watchdog.getInstance().feed();//nerds be like: "Hi, I'm Moisey
         
-        mecanum.mecanumDrive_Polar(mag, deg, rightS_X);  //DRIVING!
+        
+        mecanum.mecanumDrive_Polar(rightStick.getAxis(Joystick.AxisType.kX),rightStick.getAxis(Joystick.AxisType.kX), -leftStick.getAxis(Joystick.AxisType.kY));
         /*if (mag > 0.5 && deg > -110 && deg < -70)
         {
             mecanum.mecanumDrive_Polar(mag, -90.0, rightS_X);
@@ -395,7 +375,7 @@ public class RobotTemplate extends IterativeRobot {
         setLED();  //Set LED Color
         Watchdog.getInstance().feed();
         
-        if (leftStick.getRawButton(2))
+        if (rightStick.getRawButton(2))
         {
             hot = isHot();
             Watchdog.getInstance().feed();
@@ -417,7 +397,6 @@ public class RobotTemplate extends IterativeRobot {
             backRightDrive.set(-1.0);
             backLeftDrive.set(-1.0);
         }
-        //mecanum.tankDrive(leftStick.getAxis(Joystick.AxisType.kY) * 1, rightStick.getAxis(Joystick.AxisType.kY) * 1);
     }
     
     public void disabledInit() {
@@ -536,11 +515,13 @@ public class RobotTemplate extends IterativeRobot {
         
         watchdog.feed();
         
-        SmartDashboard.putBoolean("Auto 1 Ball Hot Check", rightStick.getZ() <= 1.0);
-        SmartDashboard.putNumber("Left Drive", leftStick.getAxis(Joystick.AxisType.kY) * 100);
+        SmartDashboard.putBoolean("Auto 1 Ball Hot Check", leftStick.getZ() <= 1.0);
         SmartDashboard.putNumber("Right Drive", rightStick.getAxis(Joystick.AxisType.kY) * 100);
-        SmartDashboard.putNumber("Left Stick", leftStick.getAxis(Joystick.AxisType.kY));
-        SmartDashboard.putNumber("Right Stick", rightStick.getAxis(Joystick.AxisType.kY));
+        SmartDashboard.putNumber("Left Drive", leftStick.getAxis(Joystick.AxisType.kY) * 100);
+        SmartDashboard.putNumber("Right Stick Y", rightStick.getAxis(Joystick.AxisType.kY));
+        SmartDashboard.putNumber("Left Stick Y", leftStick.getAxis(Joystick.AxisType.kY));
+        SmartDashboard.putNumber("Right Stick X", rightStick.getAxis(Joystick.AxisType.kX));
+        SmartDashboard.putNumber("Left Stick X", leftStick.getAxis(Joystick.AxisType.kX));
         /*SmartDashboard.putBoolean("Auto 1 Ball No Hot Check", rightStick.getZ() <= 0.5 && rightStick.getZ() > 0.0);
         SmartDashboard.putBoolean("Auto 2 Balls", rightStick.getZ() <= -0.5);
         SmartDashboard.putBoolean("Auto No Balls No Shot", rightStick.getZ() >= 0.5);*/
