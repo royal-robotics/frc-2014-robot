@@ -360,7 +360,7 @@ public class RobotTemplate extends IterativeRobot {
         Watchdog.getInstance().feed();//nerds be like: "Hi, I'm Moisey
         
         
-        mecanum.mecanumDrive_Polar(rightStick.getAxis(Joystick.AxisType.kX),rightStick.getAxis(Joystick.AxisType.kX), -leftStick.getAxis(Joystick.AxisType.kY));
+        mecanum.tankDrive(leftStick, rightStick);
         /*if (mag > 0.5 && deg > -110 && deg < -70)
         {
             mecanum.mecanumDrive_Polar(mag, -90.0, rightS_X);
